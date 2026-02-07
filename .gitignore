@@ -1,0 +1,13 @@
+# 忽略所有文件
+*
+
+# 保留 contracts 目录
+!contracts/
+!contracts/**
+
+# 但排除 DS_Store
+contracts/.DS_Store
+
+# 保留基本配置文件
+!.gitignore
+!README.md
