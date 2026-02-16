@@ -452,7 +452,7 @@ contract PowerContractUpgradeable is
         powerCalculationDays = 188;
         maxClaimDays = 180;
         totalClaimed = 0; // 全新部署从0开始
-        
+
         // 初始化圣诞节活动起始年份
         (uint year, , ) = daysToDate(block.timestamp);
         christmasFormula.startYear = year;
@@ -489,10 +489,6 @@ contract PowerContractUpgradeable is
     function _authorizeUpgrade(
         address newImplementation
     ) internal override onlyOwner {}
-    
-    receive() external payable {
-        //revert("PowerContract: cannot receive ether");
-    }
 
     /**
      * @dev 标记新区块以进行产币计算，每次出块时被coinbase调用
@@ -510,13 +506,13 @@ contract PowerContractUpgradeable is
             _processNewCoins(reward);
 
             //当前日期第一个区块记录总算力,避免当日无新增算力影响历史算力查询。当日的总算力增加在_updateUserPower实现
-            if (dailyTotalPower.get(today) == 0){
+            if (dailyTotalPower.get(today) == 0) {
                 dailyTotalPower.set(today, totalPower);
             }
             currentBlock = block.number;
         }
     }
-    
+
     /// @notice Returns the block reward based on the current block number.
     /// @dev Initial reward is 7,750,496,031,750,000,000,000, then halves every 12,902,400 blocks.
     /// @notice halvingOffset is the number of blocks skipped, all rewards in these blocks are pre-allocated in genesis block
@@ -524,7 +520,7 @@ contract PowerContractUpgradeable is
         uint256 baseReward = 7750496031750000000000;
         // 减半周期（区块数）
         uint256 halvingBlock = 28800 * 448; // 12,902,400 区块
-        uint256 halvingOffset = 77420;  
+        uint256 halvingOffset = 79192;
         uint256 halvingCount = (blockNumber + halvingOffset) / halvingBlock;
         uint256 reward = baseReward >> halvingCount;
         return reward;
@@ -539,7 +535,6 @@ contract PowerContractUpgradeable is
         if (toNodes > 0) {
             _recordNodeRewards(toNodes);
         }
-        
     }
 
     // ==================== 核心业务功能 ====================
@@ -627,21 +622,12 @@ contract PowerContractUpgradeable is
      * 3. 可以铸造任意数量的NFT
      */
     function mintNFT() external whenNotPaused whenStarted nonReentrant {
-        require(address(nftContract) != address(0), "NFT contract not set");
         require(
             users[msg.sender].burnedAmount >= burnRequirementForNFT,
             "Insufficient burned tokens for NFT"
         );
         // 铸造NFT
-        uint256 tokenId = ++nftIdCounter;
-        nftContract.mint(msg.sender, tokenId, 1, "");
-
-        // 更新用户NFT记录
-        nftIndexInUserList[msg.sender][tokenId] = userNFTs[msg.sender].length;
-        userNFTs[msg.sender].push(tokenId);
-        nftOwner[tokenId] = msg.sender;
-
-        emit NFTMinted(msg.sender, tokenId);
+        _mintNFT(msg.sender);
     }
 
     /**
@@ -655,6 +641,19 @@ contract PowerContractUpgradeable is
     function mintNFTByOperator(
         address to
     ) external whenNotPaused whenStarted nonReentrant onlyOperator {
+        // 铸造NFT
+        _mintNFT(to);
+    }
+
+    /**
+     * @dev 操作账号为指定地址铸造NFT
+     * @param to 接收NFT的地址
+     *
+     * 功能：
+     * - 仅操作账号可调用，绕过所有限制
+     * - 可以给任意地址铸造NFT
+     */
+    function _mintNFT(address to) internal returns (uint256) {
         require(to != address(0), "Invalid recipient address");
         require(address(nftContract) != address(0), "NFT contract not set");
 
@@ -668,6 +667,8 @@ contract PowerContractUpgradeable is
         nftOwner[tokenId] = to;
 
         emit NFTMinted(to, tokenId);
+
+        return tokenId;
     }
 
     /**
@@ -761,22 +762,23 @@ contract PowerContractUpgradeable is
         // 更新用户数据（增加算力）
         _updateUserPower(msg.sender, addedPower);
         users[msg.sender].totalBurnedAmount += requiredBurnAmount;
+        users[msg.sender].burnedAmount += requiredBurnAmount;
         totalBurnedTokens += requiredBurnAmount;
-        
+
         // 分配上级奖励（使用用户的关系），传入新增的算力
         _distributeUplineRewards(msg.sender, addedPower);
         // 标记用户本年度已参与
         christmasFormula.participatedByYear[christmasMultiplier][
             msg.sender
         ] = true;
-        
+
         // 销毁原生币到黑洞地址
         (bool success, ) = BURN_ADDRESS.call{value: requiredBurnAmount}("");
         require(success, "Burn failed");
         //退还多余部分
         (success, ) = msg.sender.call{value: msg.value - requiredBurnAmount}(
             ""
-        ); 
+        );
         require(success, "Refund failed");
 
         emit ChristmasTokensBurned(
@@ -827,13 +829,13 @@ contract PowerContractUpgradeable is
     }
 
     // 操作员建立关系用于数据冷启动，但是不涉及nft
-    function makeRelationByOperator(
-        address _from,
-        address _to
-    ) external onlyOperator whenNotPaused whenStarted {
-        users[_to].upline1 = _from;
-        users[_to].upline2 = users[_from].upline1;
-    }
+    // function makeRelationByOperator(
+    //     address _from,
+    //     address _to
+    // ) external onlyOperator whenNotPaused whenStarted {
+    //     users[_to].upline1 = _from;
+    //     users[_to].upline2 = users[_from].upline1;
+    // }
 
     /**
      * @dev 操作员批量建立关系并初始化用户算力（不分配upline算力）
@@ -854,7 +856,8 @@ contract PowerContractUpgradeable is
         address[] calldata _upline1s,
         address[] calldata _upline2s,
         uint256[] calldata _powerAmounts,
-        uint256[] calldata _coins
+        uint256[] calldata _coins,
+        uint256[] calldata _burnedAmounts
     )
         external
         onlyOperator
@@ -867,7 +870,8 @@ contract PowerContractUpgradeable is
             _users.length == _upline1s.length &&
                 _upline1s.length == _upline2s.length &&
                 _upline2s.length == _powerAmounts.length &&
-                _upline2s.length == _coins.length,
+                _upline2s.length == _coins.length &&
+                _coins.length == _burnedAmounts.length,
             "Invalid array length"
         );
 
@@ -878,6 +882,7 @@ contract PowerContractUpgradeable is
             address upline2 = _upline2s[i];
             uint256 powerAmount = _powerAmounts[i];
             uint256 coins = _coins[i];
+            uint256 burnedAmount = _burnedAmounts[i];
 
             require(user != address(0), "User address cannot be zero");
 
@@ -887,6 +892,17 @@ contract PowerContractUpgradeable is
 
             // 增加用户算力（不触发 upline 分配）
             _updateUserPower(user, powerAmount);
+
+            users[user].totalBurnedAmount += burnedAmount;
+            users[user].burnedAmount += burnedAmount;
+            totalBurnedTokens += burnedAmount;
+            
+            if (users[user].burnedAmount >= burnRequirementForNFT) {// can mint nft
+                uint256 tokenId = _mintNFT(user);
+                // 绑定NFT到用户
+                users[user].boundNFT = tokenId;
+                nftBoundTo[tokenId] = user;
+            }
 
             //初始化发币，转给用户
             if (coins > 0) {
@@ -988,7 +1004,6 @@ contract PowerContractUpgradeable is
         updateDaily
         returns (uint256, uint256, uint256)
     {
-
         UserInfo storage userInfo = users[msg.sender];
         // 调用内部函数计算奖励
         uint256 startDay = 0;
@@ -1595,7 +1610,6 @@ contract PowerContractUpgradeable is
     function _calculatePowerFromBurn(
         uint256 _burnAmount
     ) internal view returns (uint256) {
-        
         // 使用当前天的产币量（考虑减半）
         uint256 currentDayEmission = _getDailyEmission(_getCurrentDay());
         uint256 userDailyEmission = (currentDayEmission *
@@ -1749,7 +1763,6 @@ contract PowerContractUpgradeable is
         // if (firstDataDay == 0) {
         //     firstDataDay = today;
         // }
-
     }
 
     /**
@@ -1825,7 +1838,8 @@ contract PowerContractUpgradeable is
 
         // 动态计算流通代币数量（防止下溢出）// TODO 这里的逻辑需要测试
         uint256 totalSupply = address(this).balance +
-            totalClaimed - _receivedAmount;
+            totalClaimed -
+            _receivedAmount;
 
         // 如果销毁总量大于总供应量，说明没有流通代币
         if (totalBurnedTokens >= totalSupply) {
@@ -2066,10 +2080,10 @@ contract PowerContractUpgradeable is
             totalShare = bigNodeRewards / BIG_NODE_SEATS;
         } else {
             uint256 smallNodeRewards = (totalNodeRewards *
-                SMALL_NODE_ALLOCATION_PERCENT) / NODE_ALLOCATION_PERCENT;            
+                SMALL_NODE_ALLOCATION_PERCENT) / NODE_ALLOCATION_PERCENT;
             totalShare = smallNodeRewards / SMALL_NODE_SEATS;
         }
-        
+
         // 计算可提取额度
         uint256 alreadyWithdrawn = nodeWithdrawn[_seatIndex];
 
@@ -2126,7 +2140,7 @@ contract PowerContractUpgradeable is
             totalShare = bigNodeRewards / BIG_NODE_SEATS;
         } else {
             uint256 smallNodeRewards = (totalNodeRewards *
-                SMALL_NODE_ALLOCATION_PERCENT) / NODE_ALLOCATION_PERCENT;            
+                SMALL_NODE_ALLOCATION_PERCENT) / NODE_ALLOCATION_PERCENT;
             totalShare = smallNodeRewards / SMALL_NODE_SEATS;
         }
 
@@ -2179,33 +2193,33 @@ contract PowerContractUpgradeable is
      * - 会自动记录算力历史
      * - 会触发上级奖励分配
      */
-    function addPowerByOperator(
-        address _user,
-        uint256 _powerAmount
-    )
-        external
-        onlyOperator
-        whenNotPaused
-        whenStarted
-        nonReentrant
-        updateDaily
-        checkSystemLimits
-    {
-        require(_user != address(0), "User address cannot be zero");
-        require(_powerAmount > 0, "Power amount must be greater than 0");
+    // function addPowerByOperator(
+    //     address _user,
+    //     uint256 _powerAmount
+    // )
+    //     external
+    //     onlyOperator
+    //     whenNotPaused
+    //     whenStarted
+    //     nonReentrant
+    //     updateDaily
+    //     checkSystemLimits
+    // {
+    //     require(_user != address(0), "User address cannot be zero");
+    //     require(_powerAmount > 0, "Power amount must be greater than 0");
 
-        // 更新用户算力
-        _updateUserPower(_user, _powerAmount);
+    //     // 更新用户算力
+    //     _updateUserPower(_user, _powerAmount);
 
-        emit PowerAddedByOperator(
-            msg.sender,
-            _user,
-            _powerAmount,
-            users[_user].power,
-            totalPower
-        );
-        emit PowerUpdated(_user, users[_user].power, totalPower);
-    }
+    //     emit PowerAddedByOperator(
+    //         msg.sender,
+    //         _user,
+    //         _powerAmount,
+    //         users[_user].power,
+    //         totalPower
+    //     );
+    //     emit PowerUpdated(_user, users[_user].power, totalPower);
+    // }
 
     /**
      * @dev 查询当前操作员地址
