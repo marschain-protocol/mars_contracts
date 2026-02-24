@@ -142,6 +142,7 @@ contract PowerContractUpgradeable is
         address upline2; // 二级上级地址
         IterableMapping.Map powerHistory; // 算力变化历史记录（day => power）,因为插入数据时key被push在最后，所以数据必须按时间顺序存放，不能后期插入到中间
         uint256 lastSettleDay; // 最后结算到哪一天
+        bool canMint; // 是否可以铸造NFT
     }
 
     /**
@@ -436,7 +437,7 @@ contract PowerContractUpgradeable is
      * - 部署者自动成为合约所有者
      */
     function initialize() public initializer {
-        __Ownable_init(0x3316cB60079cA0cB8A704D85b4ce5777eeB22Fe0);
+        __Ownable_init(0xc0Cff42C8A501b0379AD978a3058c68cDECAF1c2);
         __Pausable_init();
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
@@ -489,6 +490,9 @@ contract PowerContractUpgradeable is
     function _authorizeUpgrade(
         address newImplementation
     ) internal override onlyOwner {}
+
+    receive() external payable {
+    }
 
     /**
      * @dev 标记新区块以进行产币计算，每次出块时被coinbase调用
@@ -623,7 +627,7 @@ contract PowerContractUpgradeable is
      */
     function mintNFT() external whenNotPaused whenStarted nonReentrant {
         require(
-            users[msg.sender].burnedAmount >= burnRequirementForNFT,
+            users[msg.sender].canMint || users[msg.sender].burnedAmount >= burnRequirementForNFT,
             "Insufficient burned tokens for NFT"
         );
         // 铸造NFT
@@ -856,8 +860,7 @@ contract PowerContractUpgradeable is
         address[] calldata _upline1s,
         address[] calldata _upline2s,
         uint256[] calldata _powerAmounts,
-        uint256[] calldata _coins,
-        uint256[] calldata _burnedAmounts
+        uint256[] calldata _coins
     )
         external
         onlyOperator
@@ -870,8 +873,7 @@ contract PowerContractUpgradeable is
             _users.length == _upline1s.length &&
                 _upline1s.length == _upline2s.length &&
                 _upline2s.length == _powerAmounts.length &&
-                _upline2s.length == _coins.length &&
-                _coins.length == _burnedAmounts.length,
+                _upline2s.length == _coins.length,
             "Invalid array length"
         );
 
@@ -882,7 +884,6 @@ contract PowerContractUpgradeable is
             address upline2 = _upline2s[i];
             uint256 powerAmount = _powerAmounts[i];
             uint256 coins = _coins[i];
-            uint256 burnedAmount = _burnedAmounts[i];
 
             require(user != address(0), "User address cannot be zero");
 
@@ -892,17 +893,13 @@ contract PowerContractUpgradeable is
 
             // 增加用户算力（不触发 upline 分配）
             _updateUserPower(user, powerAmount);
-
-            users[user].totalBurnedAmount += burnedAmount;
-            users[user].burnedAmount += burnedAmount;
-            totalBurnedTokens += burnedAmount;
+            // 标记用户可以铸造NFT
+            users[user].canMint = true; 
             
-            if (users[user].burnedAmount >= burnRequirementForNFT) {// can mint nft
-                uint256 tokenId = _mintNFT(user);
-                // 绑定NFT到用户
-                users[user].boundNFT = tokenId;
-                nftBoundTo[tokenId] = user;
-            }
+            uint256 tokenId = _mintNFT(user);
+            // 绑定NFT到用户
+            users[user].boundNFT = tokenId;
+            nftBoundTo[tokenId] = user;
 
             //初始化发币，转给用户
             if (coins > 0) {
@@ -1110,7 +1107,8 @@ contract PowerContractUpgradeable is
             uint256 boundNFT,
             address upline1,
             address upline2,
-            uint256 lastSettleDay
+            uint256 lastSettleDay,
+            bool canMint
         )
     {
         UserInfo storage info = users[_user];
@@ -1122,7 +1120,8 @@ contract PowerContractUpgradeable is
             info.boundNFT,
             info.upline1,
             info.upline2,
-            info.lastSettleDay
+            info.lastSettleDay,
+            info.canMint
         );
     }
 
@@ -1385,8 +1384,13 @@ contract PowerContractUpgradeable is
         view
         returns (bool canMint, uint256 burnedAmount, uint256 required)
     {
+
         burnedAmount = users[_user].burnedAmount;
         required = burnRequirementForNFT;
+
+        if (users[_user].canMint) {
+            return (true, burnedAmount, required);
+        }
 
         // 检查是否达到销毁要求且已绑定NFT
         bool hasEnoughBurned = burnedAmount >= required;
@@ -1402,6 +1406,7 @@ contract PowerContractUpgradeable is
      * @return burnedAmount 当前销毁计数
      * @return totalBurnedAmount 历史总销毁
      * @return boundNFT 用户绑定的NFT ID
+     * @return canMint 是否可以铸造NFT
      */
     function getUserFullInfo(
         address _user
@@ -1412,7 +1417,8 @@ contract PowerContractUpgradeable is
             uint256 power,
             uint256 burnedAmount,
             uint256 totalBurnedAmount,
-            uint256 boundNFT
+            uint256 boundNFT,
+            bool canMint
         )
     {
         UserInfo storage info = users[_user];
@@ -1420,7 +1426,8 @@ contract PowerContractUpgradeable is
             info.power,
             info.burnedAmount,
             info.totalBurnedAmount,
-            info.boundNFT
+            info.boundNFT,
+            info.canMint
         );
     }
 
