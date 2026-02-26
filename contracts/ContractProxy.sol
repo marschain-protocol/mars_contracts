@@ -42,22 +42,19 @@ contract ERC1967Proxy is Proxy {
 
 /**
  * @title ContractProxy
- * @dev 用于 PowerNFTUpgradeable和PowerContractUpgradeable的 ERC1967 代理合约
- * 使用代理初始化的时候传入的值
- * 使用代理初始化的时候传入的值
+ * @dev  For PowerContractUpgradeable ERC1967 proxy
  */
 contract ContractProxy is ERC1967Proxy {
-    bytes32 internal constant INIT_SLOT = 0xfa0532ac81da72eccf8103cad01bc239199db0a49f170ae92bba5c0cf7921e2d;
+    bytes32 internal constant INIT_SLOT = 0x2e654c1456f1ed51c1a211676c3e6087911f3becd2b4a081ec1a8d5dad8b8d22; //keccak256("ContractProxy.initialized") - 1
     function init(address implementation) public{
         require(!StorageSlot.getBooleanSlot(INIT_SLOT).value, "ContractProxy: already initialized");
-        bytes memory _data = abi.encodeWithSignature("initialize()"); // 初始化数据
-        initERC1967Proxy(implementation, _data);
+        bytes memory _data = abi.encodeWithSignature("initialize()"); 
         StorageSlot.getBooleanSlot(INIT_SLOT).value = true;
+        initERC1967Proxy(implementation, _data);
     }
 
-    //阻止合约接收 ETH
     receive() external payable {
-        revert("ContractProxy: cannot receive ether");
     }
+    
 }
 
