@@ -150,9 +150,12 @@ contract PowerContractUpgradeable is
      */
     struct ChristmasFormula {
         uint256 startYear; // 第一次活动年份（用于计算倍数），以后不会改变
-        uint256 level; // 额外的倍数，每次手动开启后，level+1，用于计算倍数
+        uint256 level; // 额外的倍数，每次开启后，level+1，用于计算倍数
         bool active; // 管理员手动激活标志（true时强制激活，false时按日期自动激活）
+        bool activeByTime; // 是否按日期自动激活（如果管理员没有手动激活，则根据日期自动激活）
         mapping(uint256 => mapping(address => bool)) participatedByYear; // 用户是否已参与此次方程式
+        uint256 totalPowerAtStart; // 方程式开启时的总算力
+        uint256 circulatingTokensAtStart; // 方程式开启时的流通代币数量
     }
 
     // ==================== 状态变量 ====================
@@ -189,7 +192,6 @@ contract PowerContractUpgradeable is
 
     // 系统状态
     uint256 public totalPower; // 全网总算力
-    uint256 public currentDay; // 当前天数
     uint256 public nftIdCounter; // NFT ID 计数器
     uint256 public totalBurnedTokens; // 历史总销毁代币数量
     uint256 public totalClaimed; // 用户提取总额
@@ -207,15 +209,16 @@ contract PowerContractUpgradeable is
     uint256 public constant UPLINE1_BONUS_PERCENT = 50; // 直接上级奖励比例
     uint256 public constant UPLINE2_BONUS_PERCENT = 25; // 二级上级奖励比例
     uint256 public constant MAX_TOTAL_POWER = 1e60; // 最大总算力
-    uint256 public constant MAX_SINGLE_BURN = 1e50; // 单次最大销毁数量
+    uint256 public constant MAX_SINGLE_BURN_PERCENT = 30; // 单次最大销毁数量占188天总产量的比例
     uint256 public constant MIN_BURN_AMOUNT = 1e17; // 最小销毁数量（0.1代币）
+    uint256 public constant CHRISTMAS_BURN_FACTOR = 30; // 圣诞方程式销毁因子（30%）
 
     // 黑洞地址
     address public constant BURN_ADDRESS =
         0x0000000000000000000000000000000000000000;
 
     // 合约版本
-    uint256 public version;
+    uint64 public version;
 
     // 操作员管理
     address public operator; // 操作员地址，可以给任意地址添加算力
@@ -262,7 +265,7 @@ contract PowerContractUpgradeable is
         uint256 oldValue,
         uint256 newValue
     );
-    event ContractUpgraded(uint256 oldVersion, uint256 newVersion);
+    event ContractUpgraded(uint64 oldVersion, uint64 newVersion);
     event NodeAdminUpdated(uint256 indexed index, address indexed admin);
     event NodeRewardClaimed(address indexed admin, uint256 amount);
     event RewardsSettled(
@@ -356,14 +359,6 @@ contract PowerContractUpgradeable is
     }
 
     /**
-     * @dev 更新每日数据
-     */
-    modifier updateDaily() {
-        _updateDailyData();
-        _;
-    }
-
-    /**
      * @dev 检查系统限制
      */
     modifier checkSystemLimits() {
@@ -405,7 +400,6 @@ contract PowerContractUpgradeable is
      *    - UUPSUpgradeable：初始化升级功能
      *
      * 2. 设置核心变量：
-     *    - currentDay：当前天数
      *    - version：合约版本号（初始为1）
      *    - nftIdCounter：NFT ID计数器（从0开始）
      *    - totalBurnedTokens：总销毁代币数（初始为0）
@@ -442,8 +436,7 @@ contract PowerContractUpgradeable is
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
 
-        currentDay = _getCurrentDay();
-        firstDataDay = currentDay;
+        firstDataDay = _getCurrentDay();
         version = 1;
         nftIdCounter = 0;
         totalBurnedTokens = 0;
@@ -470,14 +463,15 @@ contract PowerContractUpgradeable is
      *
      * 在合约升级后可以调用，用于初始化新功能或迁移数据
      * 版本号必须递增，每个版本号只能初始化一次
+     * @custom:oz-upgrades-validate-as-initializer
      */
     function reinitialize(
-        uint256 _newVersion
-    ) public reinitializer(uint8(_newVersion)) {
-        uint256 oldVersion = version;
+        uint64 _newVersion
+    ) public reinitializer(_newVersion) {
+        uint64 oldVersion = version;
         version = _newVersion;
         emit ContractUpgraded(oldVersion, _newVersion);
-    }
+    } 
 
     // ==================== 升级授权 ====================
 
@@ -514,6 +508,9 @@ contract PowerContractUpgradeable is
                 dailyTotalPower.set(today, totalPower);
             }
             currentBlock = block.number;
+            if (currentBlock % 1200 == 0) {
+                _tryActivateChristmasFormulaByTime(); // 每1200个区块尝试激活圣诞方程式
+            }
         }
     }
 
@@ -562,7 +559,6 @@ contract PowerContractUpgradeable is
         whenNotPaused
         whenStarted
         nonReentrant
-        updateDaily
         checkSystemLimits
     {
         //判断圣诞方程式没有开启，开启了不可以执行销毁
@@ -573,7 +569,6 @@ contract PowerContractUpgradeable is
 
         uint256 _amount = msg.value;
         require(_amount >= MIN_BURN_AMOUNT, "Burn amount too small");
-        require(_amount <= MAX_SINGLE_BURN, "Burn amount too large");
 
         // 检查NFT绑定逻辑
         if (users[msg.sender].boundNFT == 0) {
@@ -690,9 +685,7 @@ contract PowerContractUpgradeable is
      * - 第2年：20倍
      * - 第3年：40倍
      * - 以此类推（2^(年份差) × 10）
-     *
-     * 销毁因子计算：流通代币的节点总分配比例 / 总算力
-     * 用户销毁数量：用户算力 * 销毁因子
+     * 计算公式：（用户算力 / 方程式开启时的总算力） * 方程式开启时的总流通量 * 销毁因子（30%）
      * 获得算力：销毁数量对应的基础算力 * 倍数
      */
     function burnChristmas(
@@ -703,17 +696,13 @@ contract PowerContractUpgradeable is
         whenNotPaused
         whenStarted
         nonReentrant
-        updateDaily
         checkSystemLimits
     {
-        // 验证活动是否激活
-        require(_isChristmasFormulaActive(), "Christmas event is not active");
+        require(_isChristmasFormulaActive(), "Christmas event is not active");// 验证活动是否激活
 
         (uint christmasYear, , ) = daysToDate(block.timestamp);
 
-        uint256 christmasMultiplier = getCurrentChristmasMultiplier(
-            christmasYear
-        );
+        uint256 christmasMultiplier = getCurrentChristmasMultiplier();
 
         // 验证用户本年度是否已参与
         require(
@@ -749,8 +738,7 @@ contract PowerContractUpgradeable is
 
         // 计算用户应该销毁的固定数量
         uint256 requiredBurnAmount = _calculateChristmasBurnAmount(
-            msg.sender,
-            msg.value
+            msg.sender
         );
         require(requiredBurnAmount > 0, "Invalid burn amount");
 
@@ -761,7 +749,7 @@ contract PowerContractUpgradeable is
         );
 
         uint256 addedPower = users[msg.sender].power *
-            (christmasMultiplier - 1);
+            (christmasMultiplier - 1); // 算出增加值
 
         // 更新用户数据（增加算力）
         _updateUserPower(msg.sender, addedPower);
@@ -866,7 +854,6 @@ contract PowerContractUpgradeable is
         onlyOperator
         whenNotStarted
         nonReentrant
-        updateDaily
         checkSystemLimits
     {
         require(
@@ -998,7 +985,6 @@ contract PowerContractUpgradeable is
         whenNotPaused
         whenStarted
         nonReentrant
-        updateDaily
         returns (uint256, uint256, uint256)
     {
         UserInfo storage userInfo = users[msg.sender];
@@ -1127,20 +1113,15 @@ contract PowerContractUpgradeable is
 
     /**
      * @dev 获取当前圣诞方程式倍数
-     * @param _currentYear 年份
      * @return 当前倍数（未激活时返回1，激活时返回 2^第几次 × 10）
      */
     function getCurrentChristmasMultiplier(
-        uint256 _currentYear
     ) public view returns (uint256) {
         if (_isChristmasFormulaActive()) {
-            // 圣诞节活动倍数 = 2^level × 10, level=当前年份-起始年份+手动开启次数
+            // 圣诞节活动倍数 = 2^index × 10, index=当前年份-起始年份+手动开启次数
             // 第一年：10倍，第二年：20倍，第三年：40倍
             return
-                (2 **
-                    (_currentYear -
-                        christmasFormula.startYear +
-                        christmasFormula.level)) * 10;
+                (2 ** (christmasFormula.level - 1)) * 10;
         }
         return 1;
     }
@@ -1161,25 +1142,21 @@ contract PowerContractUpgradeable is
     /**
      * @dev 获取用户在本年度圣诞活动中的销毁信息
      * @param _user 用户地址
-     * @param _currentYear 年份
      * @return requiredAmount 需要销毁的固定数量
      * @return canParticipate 是否可以参与
      */
     function getUserChristmasBurnInfo(
-        address _user,
-        uint256 _currentYear
+        address _user
     ) external view returns (uint256 requiredAmount, bool canParticipate) {
         if (!_isChristmasFormulaActive()) {
             return (0, false);
         }
 
         // 计算需要销毁的固定数量
-        requiredAmount = _calculateChristmasBurnAmount(_user, 0);
+        requiredAmount = _calculateChristmasBurnAmount(_user);
 
         // 判断是否可以参与
-        uint256 christmasMultiplier = getCurrentChristmasMultiplier(
-            _currentYear
-        );
+        uint256 christmasMultiplier = getCurrentChristmasMultiplier();
         canParticipate =
             !hasParticipatedChristmas(_user, christmasMultiplier) &&
             users[_user].power > 0 &&
@@ -1191,13 +1168,11 @@ contract PowerContractUpgradeable is
 
     /**
      * @dev 获取圣诞活动信息
-     * @param _currentYear 年份
      * @return active 是否激活
      * @return startYear 起始年份
      * @return multiplier 当前倍数（2^第几次 × 10）
      */
     function getChristmasInfo(
-        uint256 _currentYear
     )
         external
         view
@@ -1206,10 +1181,7 @@ contract PowerContractUpgradeable is
         return (
             _isChristmasFormulaActive(),
             christmasFormula.startYear,
-            (2 **
-                (_currentYear -
-                    christmasFormula.startYear +
-                    christmasFormula.level)) * 10
+            (2 ** (christmasFormula.level - 1)) * 10
         );
     }
 
@@ -1268,21 +1240,6 @@ contract PowerContractUpgradeable is
         uint256 _day = _getCurrentDay();
         uint256 dailyEmissionRate = _getDailyEmission(_day);
         return (totalBurnedTokens, totalPower, dailyEmissionRate);
-    }
-
-    /**
-     * @dev 获取用户拥有的NFT列表
-     * @param _user 用户地址
-     * @return NFT ID数组
-     *
-     * 注意：
-     * - 如果用户拥有的NFT数量很多（>100个），建议使用分页查询 getUserNFTsPaginated
-     * - 返回完整数组可能消耗较多gas（在交易中调用时）或导致RPC查询超时
-     */
-    function getUserNFTs(
-        address _user
-    ) external view returns (uint256[] memory) {
-        return userNFTs[_user];
     }
 
     /**
@@ -1623,10 +1580,10 @@ contract PowerContractUpgradeable is
             USER_ALLOCATION_PERCENT) / 100;
         uint256 totalDaysOutput = userDailyEmission * powerCalculationDays;
 
-        // 防止销毁量超过188天总产币（这种情况下公式会失效）
+        // 防止销毁量超过188天总产币MAX_SINGLE_BURN_PERCENT的百分比，保证新增算力不会过大
         require(
-            _burnAmount < totalDaysOutput,
-            "Burn amount exceeds 188 days emission"
+            _burnAmount < (totalDaysOutput * MAX_SINGLE_BURN_PERCENT) / 100,
+            "Burn amount exceeds max value allowed"
         );
 
         // 新增算力 = 销毁代币 * 当前总算力 / (188天总产币 - 销毁代币)
@@ -1809,57 +1766,38 @@ contract PowerContractUpgradeable is
     /**
      * @dev 检查圣诞方程式是否激活
      * @return 是否激活
-     *
-     * 激活条件：
-     * 1. 管理员手动激活（christmasFormula.active == true）
-     * 2. 或者自动激活：每年12月25日到次年1月5日（总共21天）
      */
     function _isChristmasFormulaActive() internal view returns (bool) {
-        // 管理员手动激活
-        if (christmasFormula.active) {
+        if (christmasFormula.active || christmasFormula.activeByTime) {
             return true;
         }
-
-        // 自动激活：每年12月25日到次年1月5日
-        (, uint month, uint day) = daysToDate(block.timestamp);
-        return (month == 12 && day >= 25) || (month == 1 && day <= 5);
+        return false;
     }
 
     /**
      * @dev 计算用户在圣诞活动中应该销毁的固定数量
      * @param _user 用户地址
-     * @param _receivedAmount 本次接收的金额，用于减去合约中的balance，来修正合约接收前的余额
      * @return 用户应销毁的代币数量
      *
-     * 计算公式：用户算力 * 销毁因子
-     * 销毁因子 = 流通代币的节点总分配比例 / 总算力
-     * 流通代币 = 合约余额 + 用户提取总额 - 销毁总量
      */
     function _calculateChristmasBurnAmount(
-        address _user,
-        uint256 _receivedAmount
+        address _user
     ) internal view returns (uint256) {
         if (totalPower == 0 || users[_user].power == 0) {
             return 0;
         }
-
-        // 动态计算流通代币数量（防止下溢出）// TODO 这里的逻辑需要测试
-        uint256 totalSupply = address(this).balance +
-            totalClaimed -
-            _receivedAmount;
-
-        // 如果销毁总量大于总供应量，说明没有流通代币
-        if (totalBurnedTokens >= totalSupply) {
-            return 0;
-        }
-
-        uint256 circulatingTokens = totalSupply - totalBurnedTokens;
-
-        // 直接计算用户应销毁数量，避免精度损失
-        // 公式：(用户算力 * 流通代币 * 节点总分配比例) / 总算力
+        require(
+            christmasFormula.circulatingTokensAtStart > 0,
+            "Circulating tokens at start must be greater than zero"
+        );
+        require(
+            christmasFormula.totalPowerAtStart > 0,
+            "Total power at start must be greater than zero"
+        );
+        // 公式：（用户算力 / 方程式开启时的总算力） * 方程式开启时的总流通量 * 销毁因子（30%）
         return
-            (users[_user].power * circulatingTokens * NODE_ALLOCATION_PERCENT) /
-            (totalPower * 100);
+            (users[_user].power * christmasFormula.circulatingTokensAtStart * CHRISTMAS_BURN_FACTOR) /
+            (christmasFormula.totalPowerAtStart * 100);
     }
 
     /**
@@ -1870,28 +1808,48 @@ contract PowerContractUpgradeable is
         return block.timestamp / 1 days;
     }
 
-    /**
-     * @dev 更新每日数据
-     */
-    function _updateDailyData() internal {
-        uint256 today = _getCurrentDay();
-        if (today > currentDay) {
-            currentDay = today;
-        }
-    }
-
     // ==================== 管理员功能 ====================
 
     /**
      * @dev 设置NFT合约地址
      * @param _nftContract NFT合约地址
      */
-    function setNFTContract(address _nftContract) external onlyOwner {
+    function setNFTContract(address _nftContract) external onlyOwner whenNotStarted{
         require(
             _nftContract != address(0),
             "NFT contract address cannot be zero"
         );
         nftContract = IPowerNFT(_nftContract);
+    }
+
+    /**
+     * @dev 尝试根据当前日期自动激活或停用圣诞方程式
+      *
+      * 自动激活：每年12月25日到次年1月14日，其他时间关闭
+     */
+    function _tryActivateChristmasFormulaByTime() internal {
+        // 自动激活：每年12月25日到次年1月14日，其他时间关闭
+        (, uint month, uint day) = daysToDate(block.timestamp);
+        if ((month == 12 && day >= 25) || (month == 1 && day <= 14)) {
+            if (!christmasFormula.activeByTime) {
+                christmasFormula.activeByTime = true;
+                christmasFormula.level++;
+                christmasFormula.active = false; // 自动激活时，手动激活状态不生效
+                christmasFormula.totalPowerAtStart = totalPower;
+                christmasFormula.circulatingTokensAtStart = address(this).balance + totalClaimed - totalBurnedTokens;
+                emit ChristmasFormulaUpdated(
+                    christmasFormula.startYear,
+                    christmasFormula.level,
+                    christmasFormula.activeByTime
+                );
+            }
+        }
+        else{
+            if (christmasFormula.activeByTime) {
+                christmasFormula.activeByTime = false;
+            }
+            
+        }
     }
 
     /**
@@ -1901,11 +1859,13 @@ contract PowerContractUpgradeable is
      * 如果设置为false，则按日期自动激活（每年12月25日-1月5日）
      */
     function activateChristmasFormula() external onlyOwner {
-        if (christmasFormula.active) {
+        if (christmasFormula.active || christmasFormula.activeByTime) {
             return;
         }
         christmasFormula.active = true;
         christmasFormula.level++;
+        christmasFormula.totalPowerAtStart = totalPower;
+        christmasFormula.circulatingTokensAtStart = address(this).balance + totalClaimed - totalBurnedTokens;
         emit ChristmasFormulaUpdated(
             christmasFormula.startYear,
             christmasFormula.level,
@@ -1915,9 +1875,6 @@ contract PowerContractUpgradeable is
 
     /**
      * @dev 管理员停用圣诞方程式活动
-     *
-     * 停用后，活动将按日期自动激活（每年12月25日-1月5日）
-     * 如果设置为true，则强制激活，不受日期限制
      */
     function deactivateChristmasFormula() external onlyOwner {
         christmasFormula.active = false;
@@ -2247,7 +2204,7 @@ contract PowerContractUpgradeable is
      * - 用于追踪合约升级历史
      * - 帮助判断合约是否需要升级
      */
-    function getVersion() external view returns (uint256) {
+    function getVersion() external view returns (uint64) {
         return version;
     }
 
@@ -2260,7 +2217,7 @@ contract PowerContractUpgradeable is
      * - 新版本号必须大于当前版本
      * - 用于升级前的验证
      */
-    function canUpgradeTo(uint256 _newVersion) external view returns (bool) {
+    function canUpgradeTo(uint64 _newVersion) external view returns (bool) {
         return _newVersion > version;
     }
 
