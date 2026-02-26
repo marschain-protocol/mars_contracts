@@ -274,6 +274,7 @@ contract PowerNFTUpgradeable is
      * - 只更新version变量
      * - 触发ContractUpgraded事件
      * - 子类可以override添加自定义逻辑
+     * @custom:oz-upgrades-validate-as-initializer
      */
     function reinitialize(
         uint256 _newVersion
