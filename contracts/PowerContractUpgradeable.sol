@@ -598,7 +598,7 @@ contract PowerContractUpgradeable is
         require(success, "Burn failed");
 
         // 计算算力（普通销毁没有倍数加成）
-        uint256 addedPower = _calculatePowerFromBurn(_amount);
+        uint256 addedPower = calculatePowerFromBurn(_amount);
 
         _updateUserPower(msg.sender, addedPower);
         users[msg.sender].burnedAmount += _amount;
@@ -1186,63 +1186,6 @@ contract PowerContractUpgradeable is
     }
 
     /**
-     * @dev 获取算力计算所需的参数（供前端缓存使用，避免频繁调用）
-     * @return totalPower_ 当前总算力
-     * @return currentDayEmission 当前每日产币量
-     * @return powerCalculationDays_ 算力计算天数
-     * @return userAllocationPercent 用户分配比例
-     *
-     * 前端可以用这些参数自己计算：
-     * basePower = (burnAmount × totalPower) / (currentDayEmission × userAllocationPercent / 100 × powerCalculationDays)
-     */
-    function getPowerCalculationParams()
-        external
-        view
-        returns (
-            uint256 totalPower_,
-            uint256 currentDayEmission,
-            uint256 powerCalculationDays_,
-            uint256 userAllocationPercent
-        )
-    {
-        return (
-            totalPower,
-            _getDailyEmission(_getCurrentDay()),
-            powerCalculationDays,
-            USER_ALLOCATION_PERCENT
-        );
-    }
-
-    /**
-     * @dev 检查NFT是否已被绑定（用于NFT合约判断是否可转让）
-     * @param _nftId NFT ID
-     * @return 是否已被绑定（绑定后不可转让）
-     */
-    function isNFTUsed(uint256 _nftId) external view returns (bool) {
-        return nftBoundTo[_nftId] != address(0);
-    }
-
-    /**
-     * @dev 获取系统统计信息
-     * @return totalBurned 总销毁代币数量
-     * @return totalPower_ 总算力
-     * @return dailyEmission 每日产币量
-     */
-    function getSystemStats()
-        external
-        view
-        returns (
-            uint256 totalBurned,
-            uint256 totalPower_,
-            uint256 dailyEmission
-        )
-    {
-        uint256 _day = _getCurrentDay();
-        uint256 dailyEmissionRate = _getDailyEmission(_day);
-        return (totalBurnedTokens, totalPower, dailyEmissionRate);
-    }
-
-    /**
      * @dev 分页获取用户拥有的NFT列表
      * @param _user 用户地址
      * @param _offset 偏移量（从0开始）
@@ -1571,11 +1514,15 @@ contract PowerContractUpgradeable is
      *
      * 注意：使用当前天的产币量计算，考虑了减半因素
      */
-    function _calculatePowerFromBurn(
+    function calculatePowerFromBurn(
         uint256 _burnAmount
-    ) internal view returns (uint256) {
-        // 使用当前天的产币量（考虑减半）
-        uint256 currentDayEmission = _getDailyEmission(_getCurrentDay());
+    ) public view returns (uint256) {
+        // uint256 currentDayEmission = 0;
+        // if (firstDataDay == _getCurrentDay() || firstDataDay  + 1 == _getCurrentDay()){// 第一天产量固定
+        //     currentDayEmission = 7750496031750000000000 * 28800; 
+        // }
+        // 使用前1天的产币量
+        uint256 currentDayEmission = _getDailyEmission(_getCurrentDay() - 1);
         uint256 userDailyEmission = (currentDayEmission *
             USER_ALLOCATION_PERCENT) / 100;
         uint256 totalDaysOutput = userDailyEmission * powerCalculationDays;
