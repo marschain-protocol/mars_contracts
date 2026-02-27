@@ -1186,6 +1186,15 @@ contract PowerContractUpgradeable is
     }
 
     /**
+     * @dev 检查NFT是否已被绑定（用于NFT合约判断是否可转让）
+     * @param _nftId NFT ID
+     * @return 是否已被绑定（绑定后不可转让）
+     */
+    function isNFTUsed(uint256 _nftId) external view returns (bool) {
+        return nftBoundTo[_nftId] != address(0);
+    }
+    
+    /**
      * @dev 分页获取用户拥有的NFT列表
      * @param _user 用户地址
      * @param _offset 偏移量（从0开始）
