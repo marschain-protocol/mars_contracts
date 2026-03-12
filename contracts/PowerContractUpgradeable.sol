@@ -463,7 +463,6 @@ contract PowerContractUpgradeable is
      *
      * 在合约升级后可以调用，用于初始化新功能或迁移数据
      * 版本号必须递增，每个版本号只能初始化一次
-     * @custom:oz-upgrades-validate-as-initializer
      */
     function reinitialize(
         uint64 _newVersion
@@ -588,6 +587,16 @@ contract PowerContractUpgradeable is
             // 3. 绑定NFT到当前用户
             users[msg.sender].boundNFT = _nftId;
             nftBoundTo[_nftId] = msg.sender;
+
+            // 4. 建立上下级关系：upline1 设为 NFT 铸造者
+            if (users[msg.sender].upline1 == address(0)) {
+                address minter = nftMinter[_nftId];
+                if (minter != address(0) && minter != msg.sender) {
+                    users[msg.sender].upline1 = minter;
+                    users[msg.sender].upline2 = users[minter].upline1;
+                    emit RelationEstablished(_nftId, msg.sender, minter, users[minter].upline1);
+                }
+            }
         } else {
             // 已绑定NFT，必须使用绑定的NFT
             require(users[msg.sender].boundNFT == _nftId, "Must use bound NFT");
@@ -664,6 +673,7 @@ contract PowerContractUpgradeable is
         nftIndexInUserList[to][tokenId] = userNFTs[to].length;
         userNFTs[to].push(tokenId);
         nftOwner[tokenId] = to;
+        nftMinter[tokenId] = to; // 记录铸造者
 
         emit NFTMinted(to, tokenId);
 
@@ -731,6 +741,7 @@ contract PowerContractUpgradeable is
             // 3. 绑定NFT到当前用户
             users[msg.sender].boundNFT = _nftId;
             nftBoundTo[_nftId] = msg.sender;
+            // 上下级关系早已建立，无需再次建立
         } else {
             // 已绑定NFT，必须使用绑定的NFT
             require(users[msg.sender].boundNFT == _nftId, "Must use bound NFT");
@@ -783,16 +794,13 @@ contract PowerContractUpgradeable is
     }
 
     /**
-     * @dev 建立用户关联关系（由NFT合约转账时回调）
+     * @dev 由NFT合约转账时回调
      * @param _from 转出地址
      * @param _to 接收地址
      * @param _tokenId NFT ID
      *
      * 关系建立规则：
-     * 1. 只有孤立用户（没有上级关系）才会被建立关系
-     * 2. 建立两层上级关系链：上家50%，上上家25%
-     * 3. 关系存储在用户级别，一旦确定不会改变
-     * 4. 更新用户NFT持有列表
+     * 此方法无需构建关系，仅更新用户NFT列表
      */
     function makeRelation(
         address _from,
@@ -801,23 +809,6 @@ contract PowerContractUpgradeable is
     ) external onlyNFTContract whenNotPaused whenStarted {
         // 更新用户NFT列表
         _updateUserNFTList(_from, _to, _tokenId);
-
-        // 只有孤立用户（接收者没有关联关系）才建立关系，且转出转入地址不同
-        if (
-            users[_to].upline1 == address(0) &&
-            _from != _to &&
-            _from != address(0)
-        ) {
-            users[_to].upline1 = _from; // 转让者成为直接上级
-            users[_to].upline2 = users[_from].upline1; // 转让者的上级成为二级上级
-
-            emit RelationEstablished(
-                _tokenId,
-                _to,
-                _from,
-                users[_from].upline1
-            );
-        }
     }
 
     // 操作员建立关系用于数据冷启动，但是不涉及nft
@@ -1162,7 +1153,7 @@ contract PowerContractUpgradeable is
             users[_user].power > 0 &&
             requiredAmount > 0 &&
             _user.balance >= requiredAmount;
-
+        
         return (requiredAmount, canParticipate);
     }
 
@@ -1193,7 +1184,7 @@ contract PowerContractUpgradeable is
     function isNFTUsed(uint256 _nftId) external view returns (bool) {
         return nftBoundTo[_nftId] != address(0);
     }
-    
+
     /**
      * @dev 分页获取用户拥有的NFT列表
      * @param _user 用户地址
@@ -1526,12 +1517,12 @@ contract PowerContractUpgradeable is
     function calculatePowerFromBurn(
         uint256 _burnAmount
     ) public view returns (uint256) {
-        // uint256 currentDayEmission = 0;
-        // if (firstDataDay == _getCurrentDay() || firstDataDay  + 1 == _getCurrentDay()){// 第一天产量固定
-        //     currentDayEmission = 7750496031750000000000 * 28800; 
-        // }
+        uint256 currentDayEmission = 0;
+        if (firstDataDay == _getCurrentDay() || firstDataDay  + 1 == _getCurrentDay()){// 第一天产量固定
+            currentDayEmission = 7750496031750000000000 * 28800; 
+        }
         // 使用前1天的产币量
-        uint256 currentDayEmission = _getDailyEmission(_getCurrentDay() - 1);
+        else currentDayEmission = _getDailyEmission(_getCurrentDay() - 1);
         uint256 userDailyEmission = (currentDayEmission *
             USER_ALLOCATION_PERCENT) / 100;
         uint256 totalDaysOutput = userDailyEmission * powerCalculationDays;
@@ -1561,7 +1552,7 @@ contract PowerContractUpgradeable is
         UserInfo storage userInfo = users[_user];
 
         // 给直接上级50%奖励
-        if (userInfo.upline1 != address(0)) {
+        if (userInfo.upline1 != address(0) && userInfo.upline1 != _user) {
             uint256 upline1Bonus = (_newPower * UPLINE1_BONUS_PERCENT) / 100;
             // 新版solidity编译器会自动检查溢出，这里不需要手动检查
             // require(
@@ -1577,7 +1568,7 @@ contract PowerContractUpgradeable is
         }
 
         // 给二级上级25%奖励
-        if (userInfo.upline2 != address(0)) {
+        if (userInfo.upline2 != address(0) && userInfo.upline2 != userInfo.upline1) {
             uint256 upline2Bonus = (_newPower * UPLINE2_BONUS_PERCENT) / 100;
             // 新版solidity编译器会自动检查溢出，这里不需要手动检查
             // require(
@@ -1750,7 +1741,7 @@ contract PowerContractUpgradeable is
             christmasFormula.totalPowerAtStart > 0,
             "Total power at start must be greater than zero"
         );
-        // 公式：（用户算力 / 方程式开启时的总算力） * 方程式开启时的总流通量 * 销毁因子（30%）
+        // 公式：（用户算力 / 方程式开启时的总算力） * 方程式开启后21天的总流通量 * 销毁因子（30%）
         return
             (users[_user].power * christmasFormula.circulatingTokensAtStart * CHRISTMAS_BURN_FACTOR) /
             (christmasFormula.totalPowerAtStart * 100);
@@ -1792,7 +1783,8 @@ contract PowerContractUpgradeable is
                 christmasFormula.level++;
                 christmasFormula.active = false; // 自动激活时，手动激活状态不生效
                 christmasFormula.totalPowerAtStart = totalPower;
-                christmasFormula.circulatingTokensAtStart = address(this).balance + totalClaimed - totalBurnedTokens;
+                uint256 totalSupplyIn21Days = getBlockReward(block.number) * 28800 * 21; // 增加21天的总产量
+                christmasFormula.circulatingTokensAtStart = address(this).balance + totalClaimed + totalSupplyIn21Days - totalBurnedTokens;
                 emit ChristmasFormulaUpdated(
                     christmasFormula.startYear,
                     christmasFormula.level,
@@ -1821,7 +1813,8 @@ contract PowerContractUpgradeable is
         christmasFormula.active = true;
         christmasFormula.level++;
         christmasFormula.totalPowerAtStart = totalPower;
-        christmasFormula.circulatingTokensAtStart = address(this).balance + totalClaimed - totalBurnedTokens;
+        uint256 totalSupplyIn21Days = getBlockReward(block.number) * 28800 * 21; // 增加21天的总产量
+        christmasFormula.circulatingTokensAtStart = address(this).balance + totalClaimed + totalSupplyIn21Days - totalBurnedTokens;        
         emit ChristmasFormulaUpdated(
             christmasFormula.startYear,
             christmasFormula.level,
@@ -2247,7 +2240,10 @@ contract PowerContractUpgradeable is
      * - nftBoundTo (mapping): 占用1个slot
      * - nodeWithdrawAddress (mapping): 占用1个slot
      * - started (bool): 占用1个slot
-     * - 剩余空间: 46个slot
+     * - nftMinter (mapping): 占用1个slot  [v2新增]
+     * - 剩余空间: 45个slot
      */
-    uint256[46] private __gap;
+    // NFT铸造者追踪（必须放在已有变量之后）
+    mapping(uint256 => address) public nftMinter; // NFT的原始铸造者
+    uint256[45] private __gap;
 }
