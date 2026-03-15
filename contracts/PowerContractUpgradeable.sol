@@ -1172,7 +1172,7 @@ contract PowerContractUpgradeable is
         return (
             _isChristmasFormulaActive(),
             christmasFormula.startYear,
-            (2 ** (christmasFormula.level - 1)) * 10
+            christmasFormula.level == 0 ? 1 : (2 ** (christmasFormula.level - 1)) * 10
         );
     }
 
