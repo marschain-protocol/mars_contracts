@@ -248,6 +248,7 @@ contract PowerContractUpgradeable is
         uint256 newTotalPower
     );
     event NFTMinted(address indexed user, uint256 indexed tokenId);
+    event NFTBurnedAndCleaned(address indexed user, uint256 indexed tokenId);
     event RelationEstablished(
         uint256 indexed nftId,
         address indexed to,
@@ -470,7 +471,7 @@ contract PowerContractUpgradeable is
         uint64 oldVersion = version;
         version = _newVersion;
         emit ContractUpgraded(oldVersion, _newVersion);
-    } 
+    }
 
     // ==================== 升级授权 ====================
 
@@ -872,8 +873,8 @@ contract PowerContractUpgradeable is
             // 增加用户算力（不触发 upline 分配）
             _updateUserPower(user, powerAmount);
             // 标记用户可以铸造NFT
-            users[user].canMint = true; 
-            
+            users[user].canMint = true;
+
             uint256 tokenId = _mintNFT(user);
             // 绑定NFT到用户
             users[user].boundNFT = tokenId;
@@ -1153,7 +1154,7 @@ contract PowerContractUpgradeable is
             users[_user].power > 0 &&
             requiredAmount > 0 &&
             _user.balance >= requiredAmount;
-        
+
         return (requiredAmount, canParticipate);
     }
 
@@ -1519,7 +1520,7 @@ contract PowerContractUpgradeable is
     ) public view returns (uint256) {
         uint256 currentDayEmission = 0;
         if (firstDataDay == _getCurrentDay() || firstDataDay  + 1 == _getCurrentDay()){// 第一天产量固定
-            currentDayEmission = 7750496031750000000000 * 28800; 
+            currentDayEmission = 7750496031750000000000 * 28800;
         }
         // 使用前1天的产币量
         else currentDayEmission = _getDailyEmission(_getCurrentDay() - 1);
@@ -1636,6 +1637,12 @@ contract PowerContractUpgradeable is
             nftIndexInUserList[_to][_tokenId] = userNFTs[_to].length; // 记录新索引位置
             userNFTs[_to].push(_tokenId);
             nftOwner[_tokenId] = _to; // 更新NFT所有者，用于O(1)查询
+        }
+        // 销毁NFT时清理相关数据
+        else{
+            delete nftOwner[_tokenId];
+            delete nftMinter[_tokenId];
+            emit NFTBurnedAndCleaned(_from, _tokenId);
         }
     }
 
@@ -1771,8 +1778,8 @@ contract PowerContractUpgradeable is
 
     /**
      * @dev 尝试根据当前日期自动激活或停用圣诞方程式
-      *
-      * 自动激活：每年12月25日到次年1月14日，其他时间关闭
+     *
+     * 自动激活：每年12月25日到次年1月14日，其他时间关闭
      */
     function _tryActivateChristmasFormulaByTime() internal {
         // 自动激活：每年12月25日到次年1月14日，其他时间关闭

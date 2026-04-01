@@ -117,6 +117,9 @@ contract PowerNFTUpgradeable is
         uint256 amount
     );
 
+    /// @dev NFT销毁事件
+    event NFTBurned(address indexed from, uint256 indexed tokenId);
+
     /// @dev 基础URI更新事件
     event BaseURIUpdated(string oldURI, string newURI);
 
@@ -488,6 +491,38 @@ contract PowerNFTUpgradeable is
         }
     }
 
+    // ==================== 销毁功能 ====================
+
+    /**
+     * @dev 持有者销毁自己的NFT
+     * @param tokenId 要销毁的NFT ID
+     *
+     * 限制：
+     * - 只有NFT持有者可以调用
+     * - 已绑定（已使用）的NFT不可销毁
+     * - 销毁后回调算力合约清理相关数据
+     */
+    function burn(uint256 tokenId) external whenNotPaused {
+        require(
+            balanceOf(msg.sender, tokenId) > 0,
+            "Caller is not the token owner"
+        );
+
+        // _update 中会检查 NFT 是否已使用，已使用的不可销毁
+        _burn(msg.sender, tokenId, 1);
+
+        // 回调算力合约清理数据
+        if (powerContract != address(0)) {
+            IPowerContract(powerContract).makeRelation(
+                msg.sender,
+                address(0),
+                tokenId
+            );
+        }
+
+        emit NFTBurned(msg.sender, tokenId);
+    }
+
     // ==================== 元数据管理 ====================
 
     /**
@@ -618,8 +653,7 @@ contract PowerNFTUpgradeable is
      * @param values 数量数组
      *
      * 功能说明：
-     * - 禁用NFT销毁功能（to == address(0) 时拒绝）
-     * - 转账时检查NFT是否已被使用
+     * - 转账或销毁时检查NFT是否已被使用（已使用的NFT不可转账或销毁）
      * - 支持暂停功能
      * - 跟踪供应量变化
      */
@@ -633,19 +667,12 @@ contract PowerNFTUpgradeable is
         override(ERC1155Upgradeable, ERC1155SupplyUpgradeable)
         whenNotPaused
     {
-        // 禁用销毁功能：禁止将NFT转移到address(0)
-        require(to != address(0), "NFT burn is disabled");
-
-        // 如果是转账操作（不是铸造），检查NFT是否可转让
-        if (
-            from != address(0) &&
-            to != address(0) &&
-            powerContract != address(0)
-        ) {
+        // 如果是转账或销毁操作（不是铸造），检查NFT是否已使用
+        if (from != address(0) && powerContract != address(0)) {
             for (uint256 i = 0; i < ids.length; i++) {
                 require(
                     !IPowerContract(powerContract).isNFTUsed(ids[i]),
-                    "NFT already used, cannot transfer"
+                    "Used NFT cannot be transferred or burned"
                 );
             }
         }
