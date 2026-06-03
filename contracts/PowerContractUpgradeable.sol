@@ -211,7 +211,7 @@ contract PowerContractUpgradeable is
     uint256 public constant MAX_TOTAL_POWER = 1e60; // 最大总算力
     uint256 public constant MAX_SINGLE_BURN_PERCENT = 30; // 单次最大销毁数量占188天总产量的比例
     uint256 public constant MIN_BURN_AMOUNT = 1e17; // 最小销毁数量（0.1代币）
-    uint256 public constant CHRISTMAS_BURN_FACTOR = 30; // 圣诞方程式销毁因子（30%）
+    uint256 public constant CHRISTMAS_BURN_FACTOR = 35; // 圣诞方程式销毁因子（35%）
 
     // 黑洞地址
     address public constant BURN_ADDRESS =
@@ -1748,7 +1748,7 @@ contract PowerContractUpgradeable is
             christmasFormula.totalPowerAtStart > 0,
             "Total power at start must be greater than zero"
         );
-        // 公式：（用户算力 / 方程式开启时的总算力） * 方程式开启后21天的总流通量 * 销毁因子（30%）
+        // 公式：（用户算力 / 方程式开启时的总算力） * 方程式开启后8天的总流通量 * 销毁因子（35%）
         return
             (users[_user].power * christmasFormula.circulatingTokensAtStart * CHRISTMAS_BURN_FACTOR) /
             (christmasFormula.totalPowerAtStart * 100);
@@ -1779,19 +1779,19 @@ contract PowerContractUpgradeable is
     /**
      * @dev 尝试根据当前日期自动激活或停用圣诞方程式
      *
-     * 自动激活：每年12月25日到次年1月14日，其他时间关闭
+     * 自动激活：每年12月25日到次年1月1日，其他时间关闭
      */
     function _tryActivateChristmasFormulaByTime() internal {
-        // 自动激活：每年12月25日到次年1月14日，其他时间关闭
+        // 自动激活：每年12月25日到次年1月1日，其他时间关闭
         (, uint month, uint day) = daysToDate(block.timestamp);
-        if ((month == 12 && day >= 25) || (month == 1 && day <= 14)) {
+        if ((month == 12 && day >= 25) || (month == 1 && day <= 1)) {
             if (!christmasFormula.activeByTime) {
                 christmasFormula.activeByTime = true;
                 christmasFormula.level++;
                 christmasFormula.active = false; // 自动激活时，手动激活状态不生效
                 christmasFormula.totalPowerAtStart = totalPower;
-                uint256 totalSupplyIn21Days = getBlockReward(block.number) * 28800 * 21; // 增加21天的总产量
-                christmasFormula.circulatingTokensAtStart = address(this).balance + totalClaimed + totalSupplyIn21Days - totalBurnedTokens;
+                uint256 totalSupplyIn8Days = getBlockReward(block.number) * 28800 * 8; // 增加8天的总产量
+                christmasFormula.circulatingTokensAtStart = address(this).balance + totalClaimed + totalSupplyIn8Days - totalBurnedTokens;
                 emit ChristmasFormulaUpdated(
                     christmasFormula.startYear,
                     christmasFormula.level,
@@ -1810,8 +1810,8 @@ contract PowerContractUpgradeable is
     /**
      * @dev 管理员手动激活圣诞方程式活动
      *
-     * 激活后，不论是否在活动日期（12月25日-1月5日）中，都视为激活状态
-     * 如果设置为false，则按日期自动激活（每年12月25日-1月5日）
+     * 激活后，不论是否在活动日期（12月25日-1月1日）中，都视为激活状态
+     * 如果设置为false，则按日期自动激活（每年12月25日-1月1日）
      */
     function activateChristmasFormula() external onlyOwner {
         if (christmasFormula.active || christmasFormula.activeByTime) {
@@ -1820,8 +1820,8 @@ contract PowerContractUpgradeable is
         christmasFormula.active = true;
         christmasFormula.level++;
         christmasFormula.totalPowerAtStart = totalPower;
-        uint256 totalSupplyIn21Days = getBlockReward(block.number) * 28800 * 21; // 增加21天的总产量
-        christmasFormula.circulatingTokensAtStart = address(this).balance + totalClaimed + totalSupplyIn21Days - totalBurnedTokens;        
+        uint256 totalSupplyIn8Days = getBlockReward(block.number) * 28800 * 8; // 增加8天的总产量
+        christmasFormula.circulatingTokensAtStart = address(this).balance + totalClaimed + totalSupplyIn8Days - totalBurnedTokens;        
         emit ChristmasFormulaUpdated(
             christmasFormula.startYear,
             christmasFormula.level,
