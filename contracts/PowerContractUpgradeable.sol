@@ -212,6 +212,7 @@ contract PowerContractUpgradeable is
     uint256 public constant MAX_SINGLE_BURN_PERCENT = 30; // 单次最大销毁数量占188天总产量的比例
     uint256 public constant MIN_BURN_AMOUNT = 1e17; // 最小销毁数量（0.1代币）
     uint256 public constant CHRISTMAS_BURN_FACTOR = 35; // 圣诞方程式销毁因子（35%）
+    uint256 public constant MINT_NFT_AMOUNT = 1e19; // 铸造NFT需要的销毁代币数量(10个代币)
 
     // 黑洞地址
     address public constant BURN_ADDRESS =
@@ -439,7 +440,7 @@ contract PowerContractUpgradeable is
 
         firstDataDay = _getCurrentDay();
         version = 1;
-        nftIdCounter = 0;
+        nftIdCounter = 10000000;
         totalBurnedTokens = 0;
 
         // 初始化系统参数
@@ -470,6 +471,9 @@ contract PowerContractUpgradeable is
     ) public reinitializer(_newVersion) {
         uint64 oldVersion = version;
         version = _newVersion;
+        if (nftIdCounter < 10000000) {
+            nftIdCounter = 10000000; // 升级后NFT ID从10000000开始
+        }
         emit ContractUpgraded(oldVersion, _newVersion);
     }
 
@@ -629,12 +633,26 @@ contract PowerContractUpgradeable is
      * 1. 用户累计销毁代币达到要求（10000个代币）
      * 2. 用户已绑定NFT（必须先使用NFT销毁才能铸造）
      * 3. 可以铸造任意数量的NFT
+     * 4. 销毁10个代币
      */
-    function mintNFT() external whenNotPaused whenStarted nonReentrant {
+    function mintNFT() external payable whenNotPaused whenStarted nonReentrant {
+        uint256 _amount = msg.value;
+        require(_amount == MINT_NFT_AMOUNT, "10 tokens required to mint NFT");
+
         require(
             users[msg.sender].canMint || users[msg.sender].burnedAmount >= burnRequirementForNFT,
             "Insufficient burned tokens for NFT"
         );
+
+        // 销毁原生币到黑洞地址
+        (bool success, ) = BURN_ADDRESS.call{value: _amount}("");
+        require(success, "Burn failed");
+
+        users[msg.sender].burnedAmount += _amount;
+        users[msg.sender].totalBurnedAmount += _amount;
+        totalBurnedTokens += _amount;
+        emit TokensBurned(msg.sender, _amount, 0); // 铸造NFT销毁代币不增加算力
+
         // 铸造NFT
         _mintNFT(msg.sender);
     }
@@ -802,12 +820,17 @@ contract PowerContractUpgradeable is
      *
      * 关系建立规则：
      * 此方法无需构建关系，仅更新用户NFT列表
+     * 升级后新规则：
+     * 只允许转让升级后铸造的NFT（ID>10000000），旧NFT不允许转让
      */
     function makeRelation(
         address _from,
         address _to,
         uint256 _tokenId
     ) external onlyNFTContract whenNotPaused whenStarted {
+        if (_to != address(0)) {
+            require(_tokenId > 10000000, "Old NFT transfer not allowed");
+        }
         // 更新用户NFT列表
         _updateUserNFTList(_from, _to, _tokenId);
     }
