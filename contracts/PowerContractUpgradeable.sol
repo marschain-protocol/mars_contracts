@@ -6,7 +6,7 @@ import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-
+import "@openzeppelin/contracts/utils/math/Math.sol";
 /**
  * @title IPowerNFT
  * @dev NFT合约接口，简化后只包含必要功能
@@ -1513,13 +1513,40 @@ contract PowerContractUpgradeable is
                 uint256 dailyEmission = _getDailyEmission(day);
                 uint256 dailyUserPool = (dailyEmission *
                     USER_ALLOCATION_PERCENT) / 100;
-                uint256 userShare = (dailyUserPool * currentPower) /
-                    totalPowerForDay;
+                // uint256 userShare = (dailyUserPool * currentPower) /
+                //     totalPowerForDay;
+                uint256 userShare = Math.mulDiv(
+                    dailyUserPool,
+                    currentPower,
+                    totalPowerForDay
+                );
                 rewards += userShare;
             }
         }
 
         return rewards;
+    }
+
+    /// @notice halvingOffset is the number of blocks skipped, all rewards in these blocks are pre-allocated in genesis block
+    function _getFuture188Emission() internal view returns (uint256) {
+        uint256 halvingBlock = 28800 * 448;
+        uint256 halvingOffset = 79192;
+
+        uint256 startBlock = block.number + 1;
+        uint256 endBlockExclusive = startBlock + powerCalculationDays * 28800;
+        uint256 halvingCount = (startBlock + halvingOffset) / halvingBlock;
+        uint256 nextHalvingBlock = (halvingCount + 1) * halvingBlock - halvingOffset;
+        uint256 firstRangeEnd = nextHalvingBlock < endBlockExclusive
+            ? nextHalvingBlock
+            : endBlockExclusive;
+
+        uint256 totalEmission = (firstRangeEnd - startBlock) * getBlockReward(startBlock);
+
+        if (firstRangeEnd < endBlockExclusive) {
+            totalEmission += (endBlockExclusive - firstRangeEnd) * getBlockReward(firstRangeEnd);
+        }
+
+        return totalEmission;
     }
 
     /**
@@ -1541,25 +1568,20 @@ contract PowerContractUpgradeable is
     function calculatePowerFromBurn(
         uint256 _burnAmount
     ) public view returns (uint256) {
-        uint256 currentDayEmission = 0;
-        if (firstDataDay == _getCurrentDay() || firstDataDay  + 1 == _getCurrentDay()){// 第一天产量固定
-            currentDayEmission = 7750496031750000000000 * 28800;
-        }
-        // 使用前1天的产币量
-        else currentDayEmission = _getDailyEmission(_getCurrentDay() - 1);
-        uint256 userDailyEmission = (currentDayEmission *
-            USER_ALLOCATION_PERCENT) / 100;
-        uint256 totalDaysOutput = userDailyEmission * powerCalculationDays;
+        uint256 future188Emission = _getFuture188Emission();
+        uint256 userFuture188Emission = (future188Emission * USER_ALLOCATION_PERCENT) / 100;
+        require(userFuture188Emission > 0, "No future emission");
 
         // 防止销毁量超过188天总产币MAX_SINGLE_BURN_PERCENT的百分比，保证新增算力不会过大
         require(
-            _burnAmount < (totalDaysOutput * MAX_SINGLE_BURN_PERCENT) / 100,
+            _burnAmount < (userFuture188Emission * MAX_SINGLE_BURN_PERCENT) / 100,
             "Burn amount exceeds max value allowed"
         );
 
         // 新增算力 = 销毁代币 * 当前总算力 / (188天总产币 - 销毁代币)
         // 这样可以保证新算力在新的总算力下，188天能产出等量代币
-        return (_burnAmount * totalPower) / (totalDaysOutput - _burnAmount);
+        // return (_burnAmount * totalPower) / (userFuture188Emission - _burnAmount);
+        return Math.mulDiv( _burnAmount, totalPower, userFuture188Emission - _burnAmount, Math.Rounding.Ceil);
     }
 
     /**
